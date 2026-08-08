@@ -1,0 +1,397 @@
+/**
+ * Tests for lazy-loaded NinjaOne client
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  getCredentials,
+  getClient,
+  clearClient,
+  runWithCredentials,
+} from "../utils/client.js";
+import * as clientModule from "../utils/client.js";
+
+// The mock fn is created up front via vi.hoisted (not inline in the factory
+// below) and its implementation is (re-)applied in beforeEach rather than
+// baked into the factory call. client.ts imports the SDK statically now (see
+// the comment there), which means this module is evaluated once, up front,
+// before any test's beforeEach hooks run — with the project's mockReset:true
+// config, an implementation set only inside the vi.mock() factory gets wiped
+// by the automatic pre-test reset before the very first test ever sees it.
+// Re-applying it in beforeEach keeps it correct no matter how it interacts
+// with the auto-reset.
+const { NinjaOneClientMock, constructedConfigs } = vi.hoisted(() => ({
+  NinjaOneClientMock: vi.fn(),
+  constructedConfigs: [] as { clientId: string; clientSecret: string; baseUrl: string }[],
+}));
+
+// Mock the node-ninjaone library
+vi.mock("@wyre-technology/node-ninjaone", () => ({
+  NinjaOneClient: NinjaOneClientMock,
+}));
+
+describe("NinjaOne Client Utilities", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    // Reset environment variables before each test
+    process.env = { ...originalEnv };
+    clearClient();
+    constructedConfigs.length = 0;
+    NinjaOneClientMock.mockReset();
+    NinjaOneClientMock.mockImplementation(function (config: {
+      clientId: string;
+      clientSecret: string;
+      baseUrl: string;
+    }) {
+      constructedConfigs.push(config);
+      return {
+        config,
+        devices: {
+          list: vi.fn(),
+          get: vi.fn(),
+          reboot: vi.fn(),
+          getServices: vi.fn(),
+          getAlerts: vi.fn(),
+          getActivities: vi.fn(),
+        },
+        organizations: {
+          list: vi.fn(),
+          get: vi.fn(),
+          create: vi.fn(),
+          getLocations: vi.fn(),
+          getDevices: vi.fn(),
+        },
+        alerts: {
+          list: vi.fn(),
+          reset: vi.fn(),
+          resetAll: vi.fn(),
+          getSummary: vi.fn(),
+        },
+        tickets: {
+          list: vi.fn(),
+          get: vi.fn(),
+          create: vi.fn(),
+          update: vi.fn(),
+          addComment: vi.fn(),
+          getComments: vi.fn(),
+        },
+      };
+    });
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    clearClient();
+  });
+
+  describe("getCredentials", () => {
+    it("should return null when no credentials are set", () => {
+      delete process.env.NINJAONE_CLIENT_ID;
+      delete process.env.NINJAONE_CLIENT_SECRET;
+      delete process.env.NINJAONE_REGION;
+
+      const creds = getCredentials();
+      expect(creds).toBeNull();
+    });
+
+    it("should return null when client ID is missing", () => {
+      delete process.env.NINJAONE_CLIENT_ID;
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "us";
+
+      const creds = getCredentials();
+      expect(creds).toBeNull();
+    });
+
+    it("should return null when client secret is missing", () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      delete process.env.NINJAONE_CLIENT_SECRET;
+      process.env.NINJAONE_REGION = "us";
+
+      const creds = getCredentials();
+      expect(creds).toBeNull();
+    });
+
+    it("should fall back to US region for an invalid region", () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "invalid";
+
+      const creds = getCredentials();
+      expect(creds).toEqual({
+        clientId: "test-id",
+        clientSecret: "test-secret",
+        region: "us",
+        baseUrl: "https://app.ninjarmm.com",
+      });
+    });
+
+    // Regression: MCPB/DXT desktop bundles map NINJAONE_REGION to
+    // "${user_config.ninjaone_region}". When this OPTIONAL field is left blank,
+    // Claude Desktop injects the LITERAL placeholder string (truthy, not empty),
+    // which used to bypass the `|| "us"` default, fail isValidRegion(), and make
+    // getCredentials() return null — surfacing as "No API credentials provided"
+    // on every tool call and misdirecting the user to their (correct) credentials.
+    it("should treat an unresolved config placeholder region as US (not null)", () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "${user_config.ninjaone_region}";
+
+      const creds = getCredentials();
+      expect(creds).not.toBeNull();
+      expect(creds).toEqual({
+        clientId: "test-id",
+        clientSecret: "test-secret",
+        region: "us",
+        baseUrl: "https://app.ninjarmm.com",
+      });
+    });
+
+    it("should fall back to US region for a blank or whitespace region", () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+
+      for (const value of ["", "   "]) {
+        process.env.NINJAONE_REGION = value;
+        expect(getCredentials()).toEqual({
+          clientId: "test-id",
+          clientSecret: "test-secret",
+          region: "us",
+          baseUrl: "https://app.ninjarmm.com",
+        });
+      }
+    });
+
+    it("should return credentials with default US region", () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      delete process.env.NINJAONE_REGION;
+
+      const creds = getCredentials();
+      expect(creds).toEqual({
+        clientId: "test-id",
+        clientSecret: "test-secret",
+        region: "us",
+        baseUrl: "https://app.ninjarmm.com",
+      });
+    });
+
+    it("should return credentials with EU region", () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "eu";
+
+      const creds = getCredentials();
+      expect(creds).toEqual({
+        clientId: "test-id",
+        clientSecret: "test-secret",
+        region: "eu",
+        baseUrl: "https://eu.ninjarmm.com",
+      });
+    });
+
+    it("should return credentials with OC region", () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "oc";
+
+      const creds = getCredentials();
+      expect(creds).toEqual({
+        clientId: "test-id",
+        clientSecret: "test-secret",
+        region: "oc",
+        baseUrl: "https://oc.ninjarmm.com",
+      });
+    });
+
+    it("should handle case-insensitive region", () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "EU";
+
+      const creds = getCredentials();
+      expect(creds).toEqual({
+        clientId: "test-id",
+        clientSecret: "test-secret",
+        region: "eu",
+        baseUrl: "https://eu.ninjarmm.com",
+      });
+    });
+  });
+
+  describe("getClient", () => {
+    it("should throw error when no credentials are configured", async () => {
+      delete process.env.NINJAONE_CLIENT_ID;
+      delete process.env.NINJAONE_CLIENT_SECRET;
+      delete process.env.NINJAONE_REGION;
+
+      await expect(getClient()).rejects.toThrow(
+        "No API credentials provided"
+      );
+    });
+
+    it("should create client when valid credentials are provided", async () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "us";
+
+      const client = await getClient();
+      expect(client).toBeDefined();
+      expect(client.devices).toBeDefined();
+      expect(client.organizations).toBeDefined();
+      expect(client.alerts).toBeDefined();
+      expect(client.tickets).toBeDefined();
+    });
+
+    it("should return cached client on subsequent calls", async () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "us";
+
+      const client1 = await getClient();
+      const client2 = await getClient();
+
+      expect(client1).toBe(client2);
+    });
+
+    it("should create new client when credentials change", async () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id-1";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "us";
+
+      const client1 = (await getClient()) as unknown as { config: { clientId: string } };
+
+      // Change credentials
+      process.env.NINJAONE_CLIENT_ID = "test-id-2";
+      clearClient();
+
+      const client2 = (await getClient()) as unknown as { config: { clientId: string } };
+
+      // Identity alone (not.toBe) would pass even if getClient() ignored
+      // the changed env var and rebuilt from stale credentials — the
+      // load-bearing check is that client2 actually reflects the new value.
+      expect(client1).not.toBe(client2);
+      expect(client1.config.clientId).toBe("test-id-1");
+      expect(client2.config.clientId).toBe("test-id-2");
+    });
+
+    // Regression: before the fix, a left-blank optional region arrived as the
+    // literal "${user_config.ninjaone_region}", failed region validation, made
+    // getCredentials() return null, and getClient() rejected with
+    // "No API credentials provided" on every tool call. It must now resolve.
+    it("should not reject with the credentials error when the region is an unresolved placeholder", async () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "${user_config.ninjaone_region}";
+
+      let caught: unknown;
+      try {
+        await getClient();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeUndefined();
+    });
+  });
+
+  describe("clearClient", () => {
+    it("should clear cached client", async () => {
+      process.env.NINJAONE_CLIENT_ID = "test-id";
+      process.env.NINJAONE_CLIENT_SECRET = "test-secret";
+      process.env.NINJAONE_REGION = "us";
+
+      const client1 = await getClient();
+      clearClient();
+      const client2 = await getClient();
+
+      // Distinct object identity proves a new instance was actually built
+      // (not just returned from cache); the constructedConfigs count proves
+      // it was built twice, not that a stale value silently short-circuited
+      // the cache invalidation.
+      expect(client1).not.toBe(client2);
+      expect(constructedConfigs).toHaveLength(2);
+      expect(constructedConfigs[0]).toMatchObject({ clientId: "test-id" });
+      expect(constructedConfigs[1]).toMatchObject({ clientId: "test-id" });
+    });
+  });
+
+  describe("gateway credential isolation", () => {
+    it("no longer exports the deleted module-level override functions", () => {
+      const exported = clientModule as unknown as Record<string, unknown>;
+      expect(exported.setClientOverride).toBeUndefined();
+      expect(exported.clearClientOverride).toBeUndefined();
+      expect(exported.setCredentialOverrides).toBeUndefined();
+      expect(exported.clearCredentialOverrides).toBeUndefined();
+    });
+
+    it("isolates concurrent runWithCredentials() calls even when they interleave", async () => {
+      const credsA = {
+        clientId: "tenant-a-id",
+        clientSecret: "tenant-a-secret",
+        region: "us" as const,
+        baseUrl: "https://app.ninjarmm.com",
+      };
+      const credsB = {
+        clientId: "tenant-b-id",
+        clientSecret: "tenant-b-secret",
+        region: "eu" as const,
+        baseUrl: "https://eu.ninjarmm.com",
+      };
+
+      const runA = runWithCredentials(credsA, async () => {
+        // Artificial delay forces real interleaving with runB below, rather
+        // than the two calls simply resolving in program order.
+        await new Promise((r) => setTimeout(r, 10));
+        return { creds: getCredentials(), client: await getClient() };
+      });
+
+      const runB = runWithCredentials(credsB, async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return { creds: getCredentials(), client: await getClient() };
+      });
+
+      const [resultA, resultB] = await Promise.all([runA, runB]);
+
+      // Each frame must resolve its own credentials, never the other's.
+      expect(resultA.creds).toEqual(credsA);
+      expect(resultB.creds).toEqual(credsB);
+
+      const configA = constructedConfigs.find((c) => c.clientId === credsA.clientId);
+      const configB = constructedConfigs.find((c) => c.clientId === credsB.clientId);
+
+      expect(configA).toMatchObject({
+        clientId: credsA.clientId,
+        clientSecret: credsA.clientSecret,
+      });
+      expect(configB).toMatchObject({
+        clientId: credsB.clientId,
+        clientSecret: credsB.clientSecret,
+      });
+      expect(resultA.client).not.toBe(resultB.client);
+    });
+
+    it("does not populate the shared single-tenant client cache for gateway-scoped requests", async () => {
+      // Prime a genuine single-tenant (env-mode) client + cache.
+      process.env.NINJAONE_CLIENT_ID = "env-id";
+      process.env.NINJAONE_CLIENT_SECRET = "env-secret";
+      process.env.NINJAONE_REGION = "us";
+      const envClient = await getClient();
+
+      const gatewayCreds = {
+        clientId: "gateway-id",
+        clientSecret: "gateway-secret",
+        region: "us" as const,
+        baseUrl: "https://app.ninjarmm.com",
+      };
+      const gatewayClient = await runWithCredentials(gatewayCreds, () => getClient());
+
+      expect(gatewayClient).not.toBe(envClient);
+
+      // A later non-scoped call must still resolve the original env-mode
+      // cached client — the gateway-scoped call above must not have clobbered it.
+      const envClientAgain = await getClient();
+      expect(envClientAgain).toBe(envClient);
+    });
+  });
+});

@@ -1,0 +1,73 @@
+{
+  "name": "ninjaone-mcp",
+  "version": "1.4.3",
+  "description": "NinjaOne MCP server with decision tree architecture for Claude",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "ninjaone-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:ui": "vite build && node scripts/embed-ui.mjs",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pack:mcpb": "node scripts/pack-mcpb.js",
+    "validate:mcpb": "mcpb validate manifest.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wyre-technology/ninjaone-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "ninjaone",
+    "ninja",
+    "rmm",
+    "msp",
+    "decision-tree"
+  ],
+  "author": "Wyre Technology",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/wyre-technology/ninjaone-mcp/issues"
+  },
+  "homepage": "https://github.com/wyre-technology/ninjaone-mcp#readme",
+  "dependencies": {
+    "@modelcontextprotocol/node": "^2.0.0-beta.5",
+    "@modelcontextprotocol/server": "^2.0.0-beta.5",
+    "@wyre-technology/node-ninjaone": "^2.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@modelcontextprotocol/client": "^2.0.0-beta.5",
+    "@modelcontextprotocol/ext-apps": "^1.7.3",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^11.0.0",
+    "@types/node": "^26.0.1",
+    "eslint": "^9.39.4",
+    "globals": "^17.6.0",
+    "semantic-release": "^25.0.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1",
+    "vite": "^6.0.0",
+    "vite-plugin-singlefile": "^2.1.0",
+    "vitest": "^4.1.9"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
